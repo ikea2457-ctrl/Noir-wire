@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NOIR // WIRE v3.3 — Монохромный мессенджер</title>
+  <title>NOIR // WIRE v4.0 — Монохромный мессенджер</title>
   <style>
     :root {
       --bg-void: #070707;
@@ -53,6 +53,13 @@
     button { cursor: pointer; background: none; border: none; }
     button:disabled { opacity: 0.42; cursor: not-allowed; }
     .hidden { display: none !important; }
+    .nw-typing { font-style: italic; color: var(--text-primary) !important; }
+    .nw-typing::after { content: ""; display: inline-block; width: 1.3em; text-align: left; animation: nwdots 1.2s steps(1) infinite; }
+    @keyframes nwdots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+    #nwGameOverlay { position: fixed; inset: 0; z-index: 9999; background: var(--bg-void); display: flex; flex-direction: column; }
+    #nwGameOverlay .bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border-strong); background: var(--bg-panel); }
+    #nwGameOverlay iframe { flex: 1; border: 0; width: 100%; background: #000; }
+    .nw-game-row { display: flex; align-items: center; gap: 8px; }
     .mono { font-family: var(--font-mono); }
 
     .alert-banner {
@@ -700,7 +707,7 @@
         </div>
         <div style="display:flex; align-items:center; gap:6px;">
           <button type="button" id="authOpenAdminBtn" class="btn-secondary mono" style="padding:3px 8px; font-size:11px;">🛡 Админ</button>
-          <span class="auth-badge mono">v3.3</span>
+          <span class="auth-badge mono">v4.0</span>
         </div>
       </div>
 
@@ -866,6 +873,7 @@
           <button type="button" id="openDrawBtn" class="fun-chip">✎ Рисовать</button>
           <button type="button" id="openHoloBtn" class="fun-chip">❖ Голограмма</button>
           <button type="button" id="openGameBtn" class="fun-chip">▣ Мини-игры</button>
+          <button type="button" id="nwGamesBtn" class="fun-chip">🎮 Игры (HTML)</button>
           <button type="button" id="openCipherBtn" class="fun-chip">⧆ Шифр</button>
           <button type="button" id="quickRollBtn" class="fun-chip">🎲 /roll</button>
           <button type="button" id="quickCoinBtn" class="fun-chip">🪙 /coin</button>
@@ -1290,6 +1298,7 @@
       const SUPABASE_KEY = "sb_publishable_6d8iFQys4_e1aN_E2AFtAw_pSk_aij3"; // публичный ключ, защита — в правилах RLS
       const AUTH_DOMAIN = "noirwire.app";
       const RECENT_KEY = "noir_wire_recent_accounts";
+      var NWLIVE = { synced: false, ids: new Set(), typing: {}, ch: null, bc: null, last: 0 };
       const WANT_REMOTE = Boolean(SUPABASE_URL && SUPABASE_KEY);
       const REMOTE = WANT_REMOTE && Boolean(window.supabase && window.supabase.createClient);
       const PASS_MIN = REMOTE ? 6 : 4;
@@ -1403,7 +1412,7 @@
           return {
             id: r.id, name: r.name, handle: r.handle, glyph: r.glyph, status: r.status, role: r.role,
             adminOnly: !!r.admin_only, banned: !!r.banned, onlineRaw: !!r.online,
-            online: !!r.online && Date.now() - last < 120000, lastSeen: last,
+            online: NWLIVE.synced ? NWLIVE.ids.has(r.id) : (!!r.online && Date.now() - last < 120000), lastSeen: last,
             avatar: r.avatar || "", bio: r.bio || "", phone: r.phone || "", email: r.email_public || ""
           };
         },
@@ -1631,7 +1640,7 @@
             let changed = false;
             db.data.users.forEach((u) => {
               if (u.onlineRaw === undefined) return;
-              const now = !!u.onlineRaw && Date.now() - (u.lastSeen || 0) < 120000;
+              const now = NWLIVE.synced ? NWLIVE.ids.has(u.id) : (!!u.onlineRaw && Date.now() - (u.lastSeen || 0) < 120000);
               if (u.online !== now && u.id !== state.currentUserId) { u.online = now; changed = true; }
             });
             if (changed && typeof this.onPresence === "function") this.onPresence();
@@ -2993,14 +3002,14 @@
             btn.type = "button";
             btn.className = `chat-item ${state.activeChatId === chat.id ? "active" : ""}`;
             btn.innerHTML = `
-              <div class="avatar">${getChatAvatarHtml(chat)}</div>
+              <div class="avatar">${getChatAvatarHtml(chat)}${liveDot(chat)}</div>
               <div class="chat-meta">
                 <div class="chat-top-line">
                   <span class="chat-name">${escapeHtml(getChatDisplayTitle(chat))}</span>
                   <span class="chat-time">${lastMsg ? formatTime(lastMsg.createdAt) : ""}</span>
                 </div>
                 <div class="chat-sub-line">
-                  <span class="chat-preview">${escapeHtml(getMessagePreviewText(lastMsg))}</span>
+                  <span class="chat-preview${liveTypingText(chat) ? " nw-typing" : ""}">${escapeHtml(liveTypingText(chat) || getMessagePreviewText(lastMsg))}</span>
                   ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : ""}
                 </div>
               </div>
@@ -3075,7 +3084,7 @@
         }
         $("activeChatAvatar").innerHTML = getChatAvatarHtml(chat);
         $("activeChatTitle").textContent = getChatDisplayTitle(chat);
-        $("activeChatSub").textContent = getChatSubtitle(chat);
+        const _tt = liveTypingText(chat); $("activeChatSub").textContent = _tt || getChatSubtitle(chat); $("activeChatSub").classList.toggle("nw-typing", !!_tt); liveHeaderDot(chat);
 
         const activeCall = findActiveCall(chat.id);
         const banner = $("activeCallBanner");
@@ -4229,8 +4238,13 @@
       }
 
       // ===== Звонки (WebRTC; сигналинг через Supabase Realtime Broadcast / BroadcastChannel) =====
-      const rtc = { ch: null, peers: {}, streams: {}, chain: Promise.resolve() };
-      const RTC_CFG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }, { urls: "stun:stun.cloudflare.com:3478" }] };
+      const rtc = { ch: null, peers: {}, streams: {}, audio: {}, chain: Promise.resolve() };
+      let NW_TURN_USER = []; try { NW_TURN_USER = JSON.parse(localStorage.getItem("nw_turn") || "[]"); } catch {}
+      // TURN нужен, когда прямое соединение невозможно (мобильный интернет, строгий NAT). Свой сервер: localStorage.nw_turn = '[{"urls":"turn:host:3478","username":"u","credential":"p"}]'
+      const RTC_CFG = { iceCandidatePoolSize: 4, iceServers: [
+        { urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }, { urls: "stun:stun.cloudflare.com:3478" },
+        { urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443", "turn:openrelay.metered.ca:443?transport=tcp", "turns:openrelay.metered.ca:443?transport=tcp"], username: "openrelayproject", credential: "openrelayproject" }
+      ].concat(NW_TURN_USER) };
 
       function sigSend(payload) {
         const me = getCurrentUser();
@@ -4274,6 +4288,14 @@
         if (st) { try { st.pc.close(); } catch {} }
         delete rtc.peers[peerId];
         delete rtc.streams[peerId];
+        if (rtc.audio[peerId]) { try { rtc.audio[peerId].srcObject = null; rtc.audio[peerId].remove(); } catch {} delete rtc.audio[peerId]; }
+      }
+      // Звук собеседника играет в отдельном <audio>, который не пересоздаётся при перерисовке плиток
+      function ensureRemoteAudio(peerId, stream) {
+        let a = rtc.audio[peerId];
+        if (!a) { a = document.createElement("audio"); a.autoplay = true; a.playsInline = true; a.style.display = "none"; document.body.appendChild(a); rtc.audio[peerId] = a; }
+        if (a.srcObject !== stream) a.srcObject = stream;
+        const p = a.play(); if (p && p.catch) p.catch(() => { $("callStatusNotice").textContent = "Нажмите в любом месте окна звонка, чтобы включить звук."; });
       }
       function closeAllPeers() { Object.keys(rtc.peers).forEach(closePeer); rtc.streams = {}; }
 
@@ -4281,7 +4303,7 @@
         if (rtc.peers[peerId]) return rtc.peers[peerId];
         const me = getCurrentUser();
         const pc = new RTCPeerConnection(RTC_CFG);
-        const st = { pc, polite: me.id > peerId, makingOffer: false, ignoreOffer: false, pendingIce: [] };
+        const st = { pc, polite: me.id > peerId, created: Date.now(), makingOffer: false, ignoreOffer: false, pendingIce: [] };
         rtc.peers[peerId] = st;
         const local = state.call.localStream;
         if (local) local.getTracks().forEach((t) => pc.addTrack(t, local));
@@ -4294,7 +4316,7 @@
           let stream = ev.streams && ev.streams[0];
           if (!stream) { stream = rtc.streams[peerId] || new MediaStream(); stream.addTrack(ev.track); }
           rtc.streams[peerId] = stream;
-          ev.track.onunmute = () => renderCallStage();
+          ev.track.onunmute = ev.track.onmute = () => renderCallStage();
           $("callStatusNotice").textContent = "Собеседник на связи.";
           renderCallStage();
         };
@@ -4308,6 +4330,7 @@
           if (pc.connectionState === "failed") $("callStatusNotice").textContent = "Не удалось соединиться напрямую (нужен TURN-сервер при строгом NAT).";
           renderCallStage();
         };
+        setTimeout(() => { if (rtc.peers[peerId] === st && st.pc.connectionState !== "connected" && st.pc.connectionState !== "closed") { try { st.pc.restartIce(); } catch {} } }, 10000);
         return st;
       }
 
@@ -4316,7 +4339,7 @@
         if (!p || !me || !state.call.active || p.from === me.id) return;
         if (p.to && p.to !== me.id) return;
         const peerId = p.from;
-        if (p.kind === "join") { closePeer(peerId); getPeer(peerId); renderCallStage(); return; }
+        if (p.kind === "join") { const ex = rtc.peers[peerId]; if (!(ex && Date.now() - ex.created < 1500)) { closePeer(peerId); getPeer(peerId); } renderCallStage(); return; }
         if (p.kind === "leave") { closePeer(peerId); renderCallStage(); return; }
         const st = getPeer(peerId), pc = st.pc;
         if (p.kind === "desc") {
@@ -4437,7 +4460,7 @@
       async function enableLocalMedia(wantVideo) {
         if (!navigator.mediaDevices?.getUserMedia) { state.call.localStream = new MediaStream(); state.call.camOn = false; $("callStatusNotice").textContent = "Медиаустройства недоступны (нужен https)."; return; }
         let stream = null;
-        try { stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: wantVideo ? { facingMode: "user" } : false }); }
+        try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: wantVideo ? { facingMode: "user" } : false }); }
         catch {
           if (wantVideo) { try { stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false }); $("callStatusNotice").textContent = "Камера недоступна — звонок только со звуком."; } catch {} }
         }
@@ -4521,15 +4544,14 @@
           tile.className = "call-tile";
           const hasVideo = rStream.getVideoTracks().some((t) => t.readyState === "live" && !t.muted);
           const media = document.createElement("video");
-          media.autoplay = true; media.playsInline = true; media.muted = false; media.srcObject = rStream;
+          media.autoplay = true; media.playsInline = true; media.muted = true; media.srcObject = rStream; ensureRemoteAudio(peerId, rStream);
           if (hasVideo) tile.appendChild(media);
           else {
             media.style.cssText = "position:absolute; width:1px; height:1px; opacity:0;";
             tile.innerHTML = `<div class="avatar" style="width:52px; height:52px; font-size:20px;">${avatarInner(peerUser)}</div>`;
             tile.appendChild(media);
           }
-          const p = media.play();
-          if (p && p.catch) p.catch(() => { $("callStatusNotice").textContent = "Нажмите на плитку собеседника, чтобы включить звук."; tile.style.cursor = "pointer"; tile.onclick = () => { media.play().catch(() => {}); tile.onclick = null; }; });
+          media.play().catch(() => {});
           const lbl = document.createElement("div");
           lbl.className = "call-tile-label";
           lbl.textContent = `${peerUser?.name || "Собеседник"} 🔊`;
@@ -4542,6 +4564,100 @@
         $("toggleMicBtn").textContent = `Микрофон: ${state.call.micOn ? "ВКЛ" : "ВЫКЛ"}`;
         $("toggleCamBtn").textContent = `Камера: ${state.call.camOn ? "ВКЛ" : "ВЫКЛ"}`;
         $("toggleScreenBtn").textContent = `Экран: ${state.call.screenOn ? "ВКЛ" : "ВЫКЛ"}`;
+      }
+
+      // ===== v4.0: онлайн (Realtime Presence), «печатает…», игры из HTML =====
+      function liveOtherId(chat) { const me = getCurrentUser(); const m = chat.members || []; return m.length === 2 ? m.find((id) => id !== me?.id) : null; }
+      function liveDot(chat) { const o = db.getUserById(liveOtherId(chat)); return o ? `<span class="online-dot ${!o.banned && o.online ? "" : "offline"}"></span>` : ""; }
+      function liveHeaderDot(chat) { const av = $("activeChatAvatar"); if (!av) return; av.style.position = "relative"; const old = av.querySelector(".nw-hdot"); if (old) old.remove(); const d = liveDot(chat); if (d) av.insertAdjacentHTML("beforeend", d.replace('class="online-dot', 'class="online-dot nw-hdot')); }
+      function liveTypingText(chat) {
+        const now = Date.now(), names = [];
+        for (const k in NWLIVE.typing) { const [cid, uid] = k.split("|"); if (cid === chat.id && NWLIVE.typing[k] > now) { const u = db.getUserById(uid); names.push(u ? u.name : "Кто-то"); } }
+        if (!names.length) return "";
+        return names.length === 1 ? ((chat.members || []).length > 2 ? names[0] + " печатает" : "печатает") : names.join(", ") + " печатают";
+      }
+      function liveRefresh() { try { if (!getCurrentUser()) return; renderSidebar(); renderChatHeader(); renderMyFooter(); } catch {} }
+      function liveOnTyping(p) { const me = getCurrentUser(); if (!p || !me || p.userId === me.id || !p.chatId) return; NWLIVE.typing[p.chatId + "|" + p.userId] = Date.now() + 4000; liveRefresh(); setTimeout(liveRefresh, 4200); }
+      function liveStart() {
+        const me = getCurrentUser(); if (!me || NWLIVE.ch || NWLIVE.bc) return;
+        if (REMOTE && sb) {
+          const ch = sb.channel("nw_live", { config: { presence: { key: me.id }, broadcast: { self: false } } });
+          ch.on("presence", { event: "sync" }, () => { NWLIVE.ids = new Set(Object.keys(ch.presenceState())); NWLIVE.synced = true; let c = false; db.data.users.forEach((u) => { const on = NWLIVE.ids.has(u.id) && !u.banned; if (u.online !== on) { u.online = on; c = true; } }); if (c) liveRefresh(); });
+          ch.on("broadcast", { event: "typing" }, ({ payload }) => liveOnTyping(payload));
+          ch.subscribe((st) => { if (st === "SUBSCRIBED") ch.track({ at: Date.now() }); });
+          NWLIVE.ch = ch;
+        } else if ("BroadcastChannel" in window) { NWLIVE.bc = new BroadcastChannel("nw_live"); NWLIVE.bc.onmessage = (e) => liveOnTyping(e.data); }
+      }
+      function liveStop() { try { if (NWLIVE.ch) sb.removeChannel(NWLIVE.ch); if (NWLIVE.bc) NWLIVE.bc.close(); } catch {} NWLIVE.ch = null; NWLIVE.bc = null; NWLIVE.synced = false; NWLIVE.ids = new Set(); }
+      function liveSendTyping() {
+        const me = getCurrentUser(), inp = $("messageInput"); if (!me || !state.activeChatId || !inp.value.trim() || inp.value.startsWith("/")) return;
+        if (Date.now() - NWLIVE.last < 2500) return; NWLIVE.last = Date.now();
+        const payload = { chatId: state.activeChatId, userId: me.id };
+        try { if (NWLIVE.ch) NWLIVE.ch.send({ type: "broadcast", event: "typing", payload }); else if (NWLIVE.bc) NWLIVE.bc.postMessage(payload); } catch {}
+      }
+
+      const NW_GAMES_KEY = "nw_games_v1";
+      const NW_SNAKE = '<body style="margin:0;background:#070707;color:#eee;font:14px monospace;text-align:center"><canvas id=c width=300 height=300 style="background:#0e0e0e;border:1px solid #333;margin-top:8px;touch-action:none"></canvas><div id=s></div><script>var c=document.getElementById("c"),x=c.getContext("2d"),N=15,S=20,sn,d,f,sc;function R(){sn=[{x:7,y:7}];d={x:1,y:0};sc=0;F()}function F(){f={x:Math.random()*N|0,y:Math.random()*N|0}}function T(){var h={x:(sn[0].x+d.x+N)%N,y:(sn[0].y+d.y+N)%N};if(sn.some(function(p){return p.x==h.x&&p.y==h.y})){parent.postMessage({type:"noir-score",score:sc},"*");R();return}sn.unshift(h);if(h.x==f.x&&h.y==f.y){sc++;F()}else sn.pop();x.fillStyle="#0e0e0e";x.fillRect(0,0,300,300);x.fillStyle="#fff";sn.forEach(function(p){x.fillRect(p.x*S+1,p.y*S+1,S-2,S-2)});x.fillStyle="#888";x.fillRect(f.x*S+4,f.y*S+4,12,12);document.getElementById("s").textContent="Счёт: "+sc}onkeydown=function(e){var m={37:[-1,0],38:[0,-1],39:[1,0],40:[0,1]}[e.keyCode];if(m&&!(m[0]==-d.x&&m[1]==-d.y)){d={x:m[0],y:m[1]};e.preventDefault()}};var tx,ty;c.ontouchstart=function(e){tx=e.touches[0].clientX;ty=e.touches[0].clientY};c.ontouchend=function(e){var a=e.changedTouches[0].clientX-tx,b=e.changedTouches[0].clientY-ty,m=Math.abs(a)>Math.abs(b)?[a>0?1:-1,0]:[0,b>0?1:-1];if(!(m[0]==-d.x&&m[1]==-d.y))d={x:m[0],y:m[1]}};R();setInterval(T,110)<\/script>';
+      const NW_REACT = '<body style="margin:0;background:#070707;color:#eee;font:16px monospace"><div id=b style="height:100vh;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none">Нажми, чтобы начать</div><script>var b=document.getElementById("b"),st=0,to,t0;b.onclick=function(){if(st==0){st=1;b.style.background="#222";b.textContent="Жди белого…";to=setTimeout(function(){st=2;b.style.background="#fff";b.style.color="#000";b.textContent="ЖМИ!";t0=Date.now()},1000+Math.random()*3000)}else if(st==1){clearTimeout(to);st=0;b.style.background="";b.textContent="Рано! Ещё раз"}else{var ms=Date.now()-t0;st=0;b.style.background="";b.style.color="#eee";b.textContent=ms+" мс — ещё раз";parent.postMessage({type:"noir-score",score:Math.max(0,1000-ms)},"*")}}<\/script>';
+      const NW_BUILTIN = [{ id: "b_snake", name: "Змейка", html: NW_SNAKE, builtin: true }, { id: "b_react", name: "Тест реакции", html: NW_REACT, builtin: true }];
+      function nwGamesLoad() { try { return JSON.parse(localStorage.getItem(NW_GAMES_KEY) || "[]"); } catch { return []; } }
+      function nwGamesSave(list) { try { localStorage.setItem(NW_GAMES_KEY, JSON.stringify(list)); return true; } catch { showToast("Не удалось сохранить игру: переполнено хранилище браузера."); return false; } }
+      let nwPlaying = null;
+      function nwPlayGame(g) {
+        nwCloseGame();
+        const ov = document.createElement("div"); ov.id = "nwGameOverlay";
+        const bar = document.createElement("div"); bar.className = "bar";
+        const t = document.createElement("strong"); t.textContent = g.name;
+        const sc = document.createElement("span"); sc.className = "mono"; sc.style.cssText = "margin-left:auto;color:var(--text-secondary)"; sc.textContent = g.best ? "Рекорд: " + g.best : "";
+        const x = document.createElement("button"); x.className = "btn-secondary"; x.textContent = "✕ Закрыть"; x.onclick = nwCloseGame;
+        bar.append(t, sc, x);
+        const fr = document.createElement("iframe"); fr.setAttribute("sandbox", "allow-scripts"); fr.srcdoc = g.html;
+        fr.onload = () => { try { fr.focus(); } catch {} };
+        ov.append(bar, fr); document.body.appendChild(ov);
+        nwPlaying = { g, fr, sc };
+      }
+      function nwCloseGame() { const o = document.getElementById("nwGameOverlay"); if (o) o.remove(); nwPlaying = null; }
+      function nwRenderGames() {
+        const box = $("nwGamesList"); box.innerHTML = "";
+        const bests = (() => { try { return JSON.parse(localStorage.getItem(NW_GAMES_KEY + "_best") || "{}"); } catch { return {}; } })();
+        const all = NW_BUILTIN.concat(nwGamesLoad());
+        all.forEach((g) => {
+          g.best = bests[g.id] || 0;
+          const row = document.createElement("div"); row.className = "nw-game-row";
+          const play = document.createElement("button"); play.className = "quick-user-row"; play.style.flex = "1";
+          const nm = document.createElement("div"); nm.style.cssText = "font-weight:700;font-size:13.5px"; nm.textContent = g.name + (g.builtin ? "" : " (мой файл)");
+          const sub = document.createElement("span"); sub.className = "mono"; sub.textContent = g.best ? "рекорд " + g.best : "играть →";
+          play.append(nm, sub); play.onclick = () => nwPlayGame(g); row.appendChild(play);
+          if (!g.builtin) { const del = document.createElement("button"); del.className = "btn-secondary"; del.textContent = "✕"; del.title = "Удалить"; del.onclick = () => { nwGamesSave(nwGamesLoad().filter((x) => x.id !== g.id)); nwRenderGames(); }; row.appendChild(del); }
+          box.appendChild(row);
+        });
+      }
+      function nwV4Init() {
+        const wrap = document.createElement("div"); wrap.id = "nwGamesModal"; wrap.className = "modal-backdrop hidden";
+        wrap.innerHTML = '<div class="modal-card"><div class="modal-header"><h3 class="modal-title">Игры (HTML)</h3><button type="button" class="btn-ghost" id="nwGamesClose">✕</button></div><div id="nwGamesList" style="display:flex;flex-direction:column;gap:8px"></div><div style="margin-top:12px"><input type="file" id="nwGameFile" accept=".html,.htm,text/html" class="hidden"><button type="button" class="send-btn" id="nwGameAdd">＋ Добавить игру из .html файла</button><div class="field-hint">Игра запускается изолированно (sandbox), без доступа к вашему аккаунту. Чтобы сохранялся рекорд, игра может вызвать: <span class="mono">parent.postMessage({type:"noir-score",score:123},"*")</span></div></div></div>';
+        document.body.appendChild(wrap);
+        $("nwGamesBtn").onclick = () => { nwRenderGames(); openModal("nwGamesModal"); };
+        $("nwGamesClose").onclick = () => closeModal("nwGamesModal");
+        $("nwGameAdd").onclick = () => $("nwGameFile").click();
+        $("nwGameFile").onchange = async (e) => {
+          const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+          if (f.size > 1.5 * 1024 * 1024) { showToast("Файл слишком большой (максимум 1.5 МБ)."); return; }
+          const html = await f.text();
+          if (!/<\w+/.test(html)) { showToast("Это не похоже на HTML-файл."); return; }
+          const m = html.match(/<title>([^<]{1,60})<\/title>/i);
+          const list = nwGamesLoad(); list.push({ id: "g_" + Date.now().toString(36), name: (m ? m[1].trim() : f.name.replace(/\.html?$/i, "")).slice(0, 60), html });
+          if (nwGamesSave(list)) { nwRenderGames(); showToast("Игра добавлена!", "success", 3000); }
+        };
+        window.addEventListener("message", (ev) => {
+          if (!nwPlaying || ev.source !== nwPlaying.fr.contentWindow || !ev.data || ev.data.type !== "noir-score") return;
+          const sc = Number(ev.data.score); if (!isFinite(sc)) return;
+          let b = {}; try { b = JSON.parse(localStorage.getItem(NW_GAMES_KEY + "_best") || "{}"); } catch {}
+          if (sc > (b[nwPlaying.g.id] || 0)) { b[nwPlaying.g.id] = sc; try { localStorage.setItem(NW_GAMES_KEY + "_best", JSON.stringify(b)); } catch {} nwPlaying.sc.textContent = "Рекорд: " + sc; showToast("Новый рекорд: " + sc + " 🏆", "success", 3000); }
+        });
+        $("messageInput").addEventListener("input", liveSendTyping);
+        $("callModal").addEventListener("click", () => Object.values(rtc.audio).forEach((a) => a.play().catch(() => {})));
+        setInterval(() => { if (getCurrentUser()) liveStart(); else if (NWLIVE.ch || NWLIVE.bc) liveStop(); }, 1500);
+        window.addEventListener("beforeunload", liveStop);
       }
 
       window.addEventListener("beforeunload", () => {
@@ -4799,7 +4915,7 @@
 
       try { state.adminUnlocked = sessionStorage.getItem(ADMIN_UNLOCK_KEY) === "1"; } catch { state.adminUnlocked = false; }
 
-      initAuthUI(); initAdmin(); initNavigation(); initComposer(); initModals(); initDrawingPad(); initCalls(); initMedia(); nwInitExt();
+      initAuthUI(); initAdmin(); initNavigation(); initComposer(); initModals(); initDrawingPad(); initCalls(); initMedia(); nwInitExt(); nwV4Init();
       renderQuickAccounts();
 
       if (REMOTE) { initRemoteUI(); remoteBoot(); }
