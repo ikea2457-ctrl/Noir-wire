@@ -668,6 +668,25 @@
     .composer-box .icon-btn { flex-shrink: 0; align-self: center; }
     .toast .alert-close { flex-shrink: 0; }
     .call-tile { cursor: default; }
+
+    /* ===== NW EXT: файлы, drag-and-drop, лайтбокс, уведомления ===== */
+    .nw-file-card { display: flex; align-items: center; gap: 11px; width: 290px; max-width: 100%; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: #0b0b0b; padding: 10px 11px; }
+    .nw-file-ico { flex-shrink: 0; width: 38px; height: 46px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elevated); display: flex; align-items: flex-end; justify-content: center; padding-bottom: 5px; font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-secondary); }
+    .nw-file-meta { min-width: 0; flex: 1; }
+    .nw-file-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .nw-file-size { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .nw-file-dl { flex-shrink: 0; background: transparent; border: 1px solid var(--border-strong); color: var(--text-primary); border-radius: var(--radius-sm); padding: 7px 10px; font-size: 12px; cursor: pointer; }
+    .nw-file-dl:hover { background: var(--bg-hover); border-color: var(--border-focus); }
+    .nw-img-wrap { max-width: 100%; width: 320px; }
+    .nw-file-img { display: block; max-width: 100%; max-height: 320px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: #050505; cursor: zoom-in; }
+    .nw-img-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+    .nw-drop { position: fixed; inset: 0; z-index: 9000; background: rgba(0, 0, 0, 0.84); display: flex; align-items: center; justify-content: center; pointer-events: none; }
+    .nw-drop-inner { border: 2px dashed var(--border-focus); border-radius: var(--radius-lg); padding: 38px 46px; text-align: center; font-family: var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; font-size: 13px; color: var(--text-primary); }
+    .nw-lightbox { position: fixed; inset: 0; z-index: 9500; background: rgba(0, 0, 0, 0.94); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 18px; }
+    .nw-lightbox img { max-width: 100%; max-height: calc(100% - 64px); object-fit: contain; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
+    .nw-lightbox-bar { display: flex; gap: 8px; align-items: center; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+    .nw-notif-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 10px 12px; margin-bottom: 14px; }
+    .nw-notif-row .nw-notif-status { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 2px; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
@@ -871,6 +890,8 @@
 
         <form id="composerForm" class="composer-box">
           <button type="button" id="stickerBtn" class="icon-btn" title="Стикеры">☺</button>
+          <button type="button" id="attachBtn" class="icon-btn" title="Прикрепить файл">📎</button>
+          <input type="file" id="attachInput" class="hidden" multiple />
           <textarea
             id="messageInput"
             class="composer-textarea"
@@ -1078,6 +1099,13 @@
         <div class="form-group">
           <label class="form-label" for="profEmail">Email</label>
           <input id="profEmail" class="form-input" type="email" maxlength="80" placeholder="name@example.com" autocomplete="off" />
+        </div>
+        <div class="nw-notif-row">
+          <div>
+            <div style="font-size:13px; font-weight:600;">Системные уведомления</div>
+            <div id="nwNotifStatus" class="nw-notif-status">—</div>
+          </div>
+          <button type="button" id="nwNotifBtn" class="btn-secondary">Разрешить</button>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn-secondary close-modal-btn" data-close="profileModal">Закрыть</button>
@@ -1904,6 +1932,267 @@
         holoAnimations: []
       };
 
+      // ===== NW EXT: создатель, файлы, уведомления =====
+      const NW_ICON = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#080808"/><text x="32" y="44" font-size="34" font-family="monospace" font-weight="700" text-anchor="middle" fill="#fff">N</text></svg>');
+      const NW_ASK_KEY = "noir_wire_notif_asked";
+      const NW_FILE_LOCAL_MAX = 700 * 1024;
+      const NW_FILE_REMOTE_INLINE_MAX = 600 * 1024;
+      const NW_FILE_REMOTE_MAX = 8 * 1024 * 1024;
+      const NW_LS_SOFT_CAP = 4.2 * 1024 * 1024;
+
+      function isCreator() {
+        const me = getCurrentUser();
+        return Boolean(state.adminUnlocked || (me && me.role === "admin"));
+      }
+      function applyCreatorGate() {
+        const b = document.getElementById("openGameBtn");
+        if (!b) return;
+        const ok = isCreator();
+        b.classList.toggle("hidden", !ok);
+        if (!ok) { const gm = document.getElementById("gameModal"); if (gm) gm.classList.add("hidden"); }
+      }
+
+      function nwFmtSize(n) {
+        n = Number(n) || 0;
+        if (n < 1024) return `${n} Б`;
+        if (n < 1048576) return `${(n / 1024).toFixed(1)} КБ`;
+        return `${(n / 1048576).toFixed(2)} МБ`;
+      }
+      function nwSafeUrl(u) { return typeof u === "string" && /^(data:|https?:\/\/|blob:)/i.test(u); }
+
+      async function nwAttachFile(file) {
+        const me = getCurrentUser();
+        const chat = db.data.chats.find((c) => c.id === state.activeChatId);
+        if (!me || !chat) { showToast("Сначала выберите чат."); return; }
+        if (!file) return;
+        if (!file.size) { showToast(`Файл «${file.name}» пустой.`); return; }
+        let url = null;
+        try {
+          if (REMOTE && sb) {
+            if (file.size > NW_FILE_REMOTE_MAX) throw new Error(`Файл «${file.name}» слишком большой (${nwFmtSize(file.size)}). Лимит — ${nwFmtSize(NW_FILE_REMOTE_MAX)}.`);
+            try {
+              const safe = String(file.name).replace(/[^A-Za-z0-9._-]/g, "_").slice(-60);
+              const path = `${me.id}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${safe}`;
+              const { error } = await sb.storage.from("media").upload(path, file, { contentType: file.type || undefined, upsert: false });
+              if (!error) url = sb.storage.from("media").getPublicUrl(path).data.publicUrl;
+              else console.warn("[noir file upload]", error);
+            } catch (e) { console.warn("[noir file upload]", e); }
+            if (!url) {
+              if (file.size > NW_FILE_REMOTE_INLINE_MAX) throw new Error("Не удалось загрузить файл на сервер (бакет «media»). Без него можно отправлять файлы до " + nwFmtSize(NW_FILE_REMOTE_INLINE_MAX) + ".");
+              url = await blobToDataUrl(file);
+            }
+          } else {
+            if (file.size > NW_FILE_LOCAL_MAX) throw new Error(`Файл «${file.name}» слишком большой (${nwFmtSize(file.size)}). Лимит локального режима — ${nwFmtSize(NW_FILE_LOCAL_MAX)}.`);
+            let used = 0;
+            try { used = JSON.stringify(db.data).length; } catch {}
+            if (used + Math.ceil(file.size * 1.37) + 2000 > NW_LS_SOFT_CAP) throw new Error("Недостаточно места в локальном хранилище. Удалите старые вложения или сообщения.");
+            url = await blobToDataUrl(file);
+          }
+        } catch (e) { showToast(e.message || "Не удалось прикрепить файл."); return; }
+        sendChatMessage({ kind: "file", text: `[Файл] ${file.name}`, fileName: file.name, fileSize: file.size, fileType: file.type || "application/octet-stream", fileUrl: url });
+      }
+
+      async function nwDownload(msg) {
+        const url = msg.fileUrl; if (!nwSafeUrl(url)) return;
+        const name = msg.fileName || "file";
+        const save = (href) => { const a = document.createElement("a"); a.href = href; a.download = name; a.rel = "noopener"; document.body.appendChild(a); a.click(); a.remove(); };
+        if (url.startsWith("data:") || url.startsWith("blob:")) { save(url); return; }
+        try {
+          const r = await fetch(url); const b = await r.blob(); const o = URL.createObjectURL(b);
+          save(o); setTimeout(() => URL.revokeObjectURL(o), 4000);
+        } catch { window.open(url, "_blank", "noopener"); }
+      }
+
+      function nwOpenLightbox(msg) {
+        nwCloseLightbox();
+        const box = document.createElement("div");
+        box.className = "nw-lightbox"; box.id = "nwLightbox";
+        const img = document.createElement("img"); img.src = msg.fileUrl; img.alt = msg.fileName || "Изображение";
+        const bar = document.createElement("div"); bar.className = "nw-lightbox-bar";
+        const nm = document.createElement("span"); nm.textContent = `${msg.fileName || ""} · ${nwFmtSize(msg.fileSize)}`;
+        const dl = document.createElement("button"); dl.type = "button"; dl.className = "btn-secondary"; dl.textContent = "↓ Скачать"; dl.onclick = () => nwDownload(msg);
+        const cl = document.createElement("button"); cl.type = "button"; cl.className = "btn-secondary"; cl.textContent = "✕ Закрыть"; cl.onclick = nwCloseLightbox;
+        bar.append(nm, dl, cl);
+        box.append(img, bar);
+        box.addEventListener("click", (e) => { if (e.target === box) nwCloseLightbox(); });
+        document.body.appendChild(box);
+      }
+      function nwCloseLightbox() { const b = document.getElementById("nwLightbox"); if (b) b.remove(); }
+
+      function nwRenderFileMsg(bubble, msg) {
+        const name = msg.fileName || "файл";
+        if (!nwSafeUrl(msg.fileUrl)) {
+          const d = document.createElement("div"); d.className = "field-hint"; d.textContent = `[Файл недоступен] ${name}`; bubble.appendChild(d); return;
+        }
+        if (/^image\//i.test(msg.fileType || "")) {
+          const wrap = document.createElement("div"); wrap.className = "nw-img-wrap";
+          const img = document.createElement("img"); img.className = "nw-file-img"; img.src = msg.fileUrl; img.alt = name; img.loading = "lazy";
+          img.onclick = () => nwOpenLightbox(msg);
+          const foot = document.createElement("div"); foot.className = "nw-img-foot";
+          const meta = document.createElement("div"); meta.className = "nw-file-meta";
+          const n = document.createElement("div"); n.className = "nw-file-name"; n.textContent = name;
+          const z = document.createElement("div"); z.className = "nw-file-size"; z.textContent = nwFmtSize(msg.fileSize);
+          meta.append(n, z);
+          const dl = document.createElement("button"); dl.type = "button"; dl.className = "nw-file-dl"; dl.textContent = "↓ Скачать"; dl.onclick = () => nwDownload(msg);
+          foot.append(meta, dl);
+          wrap.append(img, foot); bubble.appendChild(wrap); return;
+        }
+        const card = document.createElement("div"); card.className = "nw-file-card";
+        const ico = document.createElement("div"); ico.className = "nw-file-ico";
+        const ext = (name.includes(".") ? name.split(".").pop() : "FILE").toUpperCase().slice(0, 4); ico.textContent = ext;
+        const meta = document.createElement("div"); meta.className = "nw-file-meta";
+        const n = document.createElement("div"); n.className = "nw-file-name"; n.textContent = name; n.title = name;
+        const z = document.createElement("div"); z.className = "nw-file-size"; z.textContent = nwFmtSize(msg.fileSize);
+        meta.append(n, z);
+        const dl = document.createElement("button"); dl.type = "button"; dl.className = "nw-file-dl"; dl.textContent = "↓ Скачать"; dl.onclick = () => nwDownload(msg);
+        card.append(ico, meta, dl); bubble.appendChild(card);
+      }
+
+      // ----- звук -----
+      let nwAudioCtx = null, nwRingTimer = null, nwRingStop = null;
+      function nwCtx() {
+        try { nwAudioCtx = nwAudioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (nwAudioCtx.state === "suspended") nwAudioCtx.resume(); return nwAudioCtx; } catch { return null; }
+      }
+      function nwTone(freq, at, dur, vol) {
+        const c = nwCtx(); if (!c) return;
+        const o = c.createOscillator(), g = c.createGain();
+        o.type = "sine"; o.frequency.value = freq;
+        const t = c.currentTime + at;
+        g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(c.destination); o.start(t); o.stop(t + dur + 0.05);
+      }
+      function nwBeepMsg() { nwTone(880, 0, 0.16, 0.12); nwTone(1175, 0.14, 0.2, 0.1); }
+      function nwStartRing() {
+        nwStopRing();
+        const ring = () => { nwTone(740, 0, 0.22, 0.2); nwTone(988, 0.25, 0.22, 0.2); nwTone(740, 0.6, 0.22, 0.2); nwTone(988, 0.85, 0.22, 0.2); };
+        ring(); nwRingTimer = setInterval(ring, 2200);
+      }
+      function nwStopRing() { if (nwRingTimer) { clearInterval(nwRingTimer); nwRingTimer = null; } }
+
+      // ----- системные уведомления -----
+      function nwNotifSupported() { return "Notification" in window; }
+      function nwUpdateNotifBtn() {
+        const st = document.getElementById("nwNotifStatus"), btn = document.getElementById("nwNotifBtn");
+        if (!st || !btn) return;
+        if (!nwNotifSupported()) { st.textContent = "Не поддерживается в этом браузере"; btn.disabled = true; return; }
+        const p = Notification.permission;
+        st.textContent = p === "granted" ? "Включены" : p === "denied" ? "Заблокированы в настройках браузера" : "Выключены";
+        btn.textContent = p === "granted" ? "Проверить" : "Разрешить";
+        btn.disabled = p === "denied";
+      }
+      async function nwRequestNotif(manual) {
+        if (!nwNotifSupported()) { if (manual) showToast("Уведомления не поддерживаются в этом окружении."); return; }
+        if (Notification.permission === "denied") { if (manual) showToast("Уведомления заблокированы. Разрешите их в настройках сайта в браузере."); return; }
+        if (Notification.permission === "granted") {
+          if (manual) { nwShow("NOIR // WIRE", { body: "Системные уведомления работают.", tag: "nw_test" }); nwBeepMsg(); }
+          return;
+        }
+        try { safeStorage.setItem(NW_ASK_KEY, "1"); } catch {}
+        try {
+          const r = await Notification.requestPermission();
+          if (manual) showToast(r === "granted" ? "Уведомления включены." : "Разрешение не выдано.", r === "granted" ? "success" : "error", 4000);
+        } catch (e) { console.warn("[noir notif]", e); }
+        nwUpdateNotifBtn();
+      }
+      // Notification API; если конструктор недоступен (Android) — через Service Worker, если он зарегистрирован
+      async function nwShow(title, opts, onclick) {
+        if (!nwNotifSupported() || Notification.permission !== "granted") return null;
+        const o = { icon: NW_ICON, badge: NW_ICON, ...opts };
+        try {
+          const n = new Notification(title, o);
+          n.onclick = () => { try { window.focus(); } catch {} try { if (onclick) onclick(); } catch (e) { console.warn(e); } try { n.close(); } catch {} };
+          return n;
+        } catch {
+          try {
+            const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+            if (reg) await reg.showNotification(title, { ...o, actions: o.requireInteraction ? [{ action: "open", title: "Открыть звонок" }] : undefined });
+          } catch (e) { console.warn("[noir notif]", e); }
+          return null;
+        }
+      }
+
+      let nwSeenMsgs = null, nwSeenFor = null;
+      function nwNotifyMessages() {
+        const me = getCurrentUser();
+        if (!me) { nwSeenMsgs = null; nwSeenFor = null; return; }
+        if (!nwSeenMsgs || nwSeenFor !== me.id) { nwSeenMsgs = new Set(db.data.messages.map((m) => m.id)); nwSeenFor = me.id; return; }
+        let beeped = false;
+        db.data.messages.forEach((m) => {
+          if (nwSeenMsgs.has(m.id)) return;
+          nwSeenMsgs.add(m.id);
+          if (m.senderId === me.id || m.kind === "system" || m.kind === "call") return;
+          if (Date.now() - (m.createdAt || 0) > 60000) return;
+          const chat = db.data.chats.find((c) => c.id === m.chatId);
+          if (!chat || !(chat.members || []).includes(me.id)) return;
+          if (!document.hidden) return;
+          const sender = db.getUserById(m.senderId);
+          let body;
+          if (m.kind === "text") body = String(m.text || "").slice(0, 160);
+          else if (m.kind === "file") body = `📎 ${m.fileName || "Файл"}`;
+          else if (m.kind === "cipher") body = "[Шифр-сообщение]";
+          else if (m.kind === "game") body = "▣ Мини-игра";
+          else body = msgLabel(m);
+          nwShow(`${sender ? sender.name : "Новое сообщение"} · ${getChatDisplayTitle(chat)}`, { body, tag: `nw_msg_${chat.id}`, renotify: true, silent: false },
+            () => { selectChat(chat.id); });
+          if (!beeped) { beeped = true; nwBeepMsg(); }
+        });
+      }
+
+      async function nwNotifyCall(c, chat) {
+        if (!document.hidden) return;
+        const title = `📞 Входящий ${c.mode === "video" ? "видеозвонок" : "звонок"}`;
+        const n = await nwShow(title, {
+          body: `${getChatDisplayTitle(chat)} — нажмите, чтобы вернуться во вкладку звонка`,
+          tag: `nw_call_${c.id}`, requireInteraction: true, renotify: true, vibrate: [300, 150, 300, 150, 300], silent: false
+        }, () => { selectChat(chat.id); openCallModal(c.mode, c.id); });
+        nwStartRing();
+        const iv = setInterval(() => {
+          const cur = db.data.calls.find((x) => x.id === c.id);
+          const over = !cur || !cur.active || state.call.callId === c.id || !document.hidden || Date.now() - (c.startedAt || 0) > 45000;
+          if (over) { clearInterval(iv); nwStopRing(); try { n && n.close(); } catch {} }
+        }, 1000);
+      }
+
+      function nwInitExt() {
+        applyCreatorGate();
+        const input = document.getElementById("attachInput");
+        document.getElementById("attachBtn").onclick = () => input.click();
+        input.onchange = async () => {
+          const files = Array.from(input.files || []).slice(0, 5); input.value = "";
+          for (const f of files) await nwAttachFile(f);
+        };
+        // drag-and-drop
+        let depth = 0, overlay = null;
+        const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+        const canDrop = () => !appShell.classList.contains("hidden") && Boolean(state.activeChatId) && getCurrentUser();
+        const hide = () => { depth = 0; if (overlay) { overlay.remove(); overlay = null; } };
+        window.addEventListener("dragenter", (e) => {
+          if (!hasFiles(e) || !canDrop()) return;
+          e.preventDefault(); depth++;
+          if (!overlay) { overlay = document.createElement("div"); overlay.className = "nw-drop"; overlay.innerHTML = '<div class="nw-drop-inner">Отпустите файл, чтобы отправить в чат</div>'; document.body.appendChild(overlay); }
+        });
+        window.addEventListener("dragover", (e) => { if (hasFiles(e) && canDrop()) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } });
+        window.addEventListener("dragleave", (e) => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) hide(); });
+        window.addEventListener("drop", async (e) => {
+          if (!hasFiles(e)) return;
+          e.preventDefault(); hide();
+          if (!canDrop()) return;
+          for (const f of Array.from(e.dataTransfer.files).slice(0, 5)) await nwAttachFile(f);
+        });
+        document.addEventListener("keydown", (e) => { if (e.key === "Escape") nwCloseLightbox(); });
+        // уведомления
+        document.getElementById("nwNotifBtn").onclick = () => nwRequestNotif(true);
+        document.getElementById("openProfileBtn").addEventListener("click", nwUpdateNotifBtn);
+        nwUpdateNotifBtn();
+        const firstAsk = () => {
+          if (appShell.classList.contains("hidden") || !getCurrentUser()) return;
+          document.removeEventListener("click", firstAsk, true); document.removeEventListener("keydown", firstAsk, true);
+          if (nwNotifSupported() && Notification.permission === "default" && !safeStorage.getItem(NW_ASK_KEY)) nwRequestNotif(false);
+        };
+        document.addEventListener("click", firstAsk, true); document.addEventListener("keydown", firstAsk, true);
+        document.addEventListener("visibilitychange", () => { if (!document.hidden) nwStopRing(); });
+      }
+
       const msgCounts = {};
 
       const db = new NoirDatabaseManager(() => {
@@ -1943,6 +2232,7 @@
           const chat = db.data.chats.find((x) => x.id === c.chatId);
           if (!chat || !(chat.members || []).includes(me.id)) return;
           showToast(`Входящий ${c.mode === "video" ? "видеозвонок" : "звонок"}: ${getChatDisplayTitle(chat)}. Откройте чат и нажмите «Открыть эфир».`, "success", 15000);
+          nwNotifyCall(c, chat);
         });
       }
 
@@ -2138,6 +2428,7 @@
         const sender = db.getUserById(msg.senderId);
         const prefix = sender ? `${sender.name}: ` : "";
         if (msg.kind === "drawing") return `${prefix}[Рисунок]`;
+        if (msg.kind === "file") return `${prefix}📎 ${msg.fileName || "Файл"}`;
         if (msg.kind === "sticker") return `${prefix}${msg.imageData ? "[Стикер]" : "[Стикер] " + (msg.text || "")}`;
         if (msg.kind === "voice") return `${prefix}🎙 Голосовое`;
         if (msg.kind === "circle") return `${prefix}◯ Кружок`;
@@ -2190,6 +2481,7 @@
           $("adminPinInput").classList.remove("input-invalid");
           state.adminUnlocked = true;
           try { sessionStorage.setItem(ADMIN_UNLOCK_KEY, "1"); } catch {}
+          applyCreatorGate();
           closeModal("adminAuthModal");
           renderAdminPanel();
           openModal("adminPanelModal");
@@ -2199,6 +2491,7 @@
         $("lockAdminSessionBtn").onclick = () => {
           state.adminUnlocked = false;
           try { sessionStorage.removeItem(ADMIN_UNLOCK_KEY); } catch {}
+          applyCreatorGate();
           closeModal("adminPanelModal");
           enforceSessionRules();
           renderQuickAccounts();
@@ -3008,6 +3301,7 @@
           return;
         }
 
+        if (msg.kind === "file") { nwRenderFileMsg(bubble, msg); return; }
         if (msg.kind === "sticker") { renderStickerMsg(bubble, msg); return; }
         if (msg.kind === "voice" && msg.audio) { renderVoiceMsg(bubble, msg); return; }
         if (msg.kind === "circle" && msg.video) { renderCircleMsg(bubble, msg); return; }
@@ -3486,11 +3780,12 @@
           closeModal("holoModal"); refreshAllUI(); scrollMessagesToBottom();
         };
 
-        $("openGameBtn").onclick = () => openModal("gameModal");
+        $("openGameBtn").onclick = () => { if (!isCreator()) { showToast("Мини-игры может отправлять только создатель."); return; } openModal("gameModal"); };
         document.querySelectorAll(".start-game-btn").forEach((btn) => {
           btn.onclick = () => {
             const me = getCurrentUser(); const chat = db.data.chats.find((c) => c.id === state.activeChatId);
             if (!me || !chat) return;
+            if (!isCreator()) { showToast("Мини-игры может отправлять только создатель."); closeModal("gameModal"); return; }
             if (btn.dataset.game === "ttt") {
               db.addMessage({ chatId: chat.id, senderId: me.id, kind: "game", gameType: "ttt", board: Array(9).fill(null), turn: "X", text: "[Мини-игра: Крестики-нолики]" });
             } else {
@@ -3638,6 +3933,7 @@
         if (m.kind === "circle") return "[Кружок]";
         if (m.kind === "sticker") return m.imageData ? "[Стикер]" : `[Стикер] ${m.text || ""}`;
         if (m.kind === "drawing") return "[Рисунок]";
+        if (m.kind === "file") return `[Файл] ${m.fileName || ""}`;
         return m.text || "[медиа]";
       }
       function blobToDataUrl(blob) {
@@ -4255,7 +4551,7 @@
 
       function refreshAllUI() {
         if (!getCurrentUser()) return;
-        renderMyFooter(); renderSidebar(); renderChatHeader(); renderMessages();
+        renderMyFooter(); renderSidebar(); renderChatHeader(); renderMessages(); applyCreatorGate();
       }
 
       function initNavigation() {
@@ -4279,6 +4575,7 @@
       function trackUnread(reset = false) {
         const me = getCurrentUser();
         if (!me) return;
+        nwNotifyMessages();
         if (reset) Object.keys(msgCounts).forEach((k) => delete msgCounts[k]);
         db.data.chats.forEach((c) => {
           const msgs = db.data.messages.filter((m) => m.chatId === c.id);
@@ -4502,7 +4799,7 @@
 
       try { state.adminUnlocked = sessionStorage.getItem(ADMIN_UNLOCK_KEY) === "1"; } catch { state.adminUnlocked = false; }
 
-      initAuthUI(); initAdmin(); initNavigation(); initComposer(); initModals(); initDrawingPad(); initCalls(); initMedia();
+      initAuthUI(); initAdmin(); initNavigation(); initComposer(); initModals(); initDrawingPad(); initCalls(); initMedia(); nwInitExt();
       renderQuickAccounts();
 
       if (REMOTE) { initRemoteUI(); remoteBoot(); }
